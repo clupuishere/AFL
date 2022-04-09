@@ -129,6 +129,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            shuffle_queue,             /* Shuffle input queue?             */
            bitmap_changed = 1,        /* Time to update bitmap?           */
            qemu_mode,                 /* Running in QEMU mode?            */
+           xen_mode,                  /* Running in Xen mode?             */
            skip_requested,            /* Skip request, via SIGUSR1        */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
@@ -2115,19 +2116,24 @@ EXP_ST void init_forkserver(char** argv) {
   fsrv_ctl_fd = ctl_pipe[1];
   fsrv_st_fd  = st_pipe[0];
 
-  /* Wait for the fork server to come up, but don't wait too long. */
+  if ( !xen_mode ) {
+    /* Wait for the fork server to come up, but don't wait too long. */
 
-  it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
-  it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
+    it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
+    it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
 
-  setitimer(ITIMER_REAL, &it, NULL);
+    setitimer(ITIMER_REAL, &it, NULL);
+  } else
+    ACTF("Waiting for the Xen forkserver to signal it is ready...");
 
   rlen = read(fsrv_st_fd, &status, 4);
 
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
+  if ( !xen_mode ) {
+    it.it_value.tv_sec = 0;
+    it.it_value.tv_usec = 0;
 
-  setitimer(ITIMER_REAL, &it, NULL);
+    setitimer(ITIMER_REAL, &it, NULL);
+  }
 
   /* If we have a four-byte "hello" message from the server, we're all set.
      Otherwise, try to figure out what went wrong. */
@@ -2451,6 +2457,9 @@ static u8 run_target(char** argv, u32 timeout) {
   prev_timed_out = child_timed_out;
 
   /* Report outcome to caller. */
+
+  if ( xen_mode && child_timed_out )
+    return FAULT_TMOUT;
 
   if (WIFSIGNALED(status) && !stop_soon) {
 
@@ -3453,7 +3462,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "exec_timeout      : %u\n" /* Must match find_timeout() */
              "afl_banner        : %s\n"
              "afl_version       : " VERSION "\n"
-             "target_mode       : %s%s%s%s%s%s%s\n"
+             "target_mode       : %s%s%s%s%s%s%s%s\n"
              "command_line      : %s\n"
              "slowest_exec_ms   : %llu\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
@@ -3464,10 +3473,10 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
              exec_tmout, use_banner,
-             qemu_mode ? "qemu " : "", dumb_mode ? " dumb " : "",
+             qemu_mode ? "qemu " : "", xen_mode ? "xen " : "", dumb_mode ? " dumb " : "",
              no_forkserver ? "no_forksrv " : "", crash_mode ? "crash " : "",
              persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
-             (qemu_mode || dumb_mode || no_forkserver || crash_mode ||
+             (qemu_mode || xen_mode || dumb_mode || no_forkserver || crash_mode ||
               persistent_mode || deferred_mode) ? "" : "default",
              orig_cmdline, slowest_exec_ms);
              /* ignore errors */
@@ -4406,7 +4415,7 @@ static void show_init_stats(void) {
 
   SAYF("\n");
 
-  if (avg_us > (qemu_mode ? 50000 : 10000)) 
+  if (avg_us > ((qemu_mode || xen_mode) ? 50000 : 10000)) 
     WARNF(cLRD "The target binary is pretty slow! See %s/perf_tips.txt.",
           doc_path);
 
@@ -6805,8 +6814,8 @@ static void handle_stop_sig(int sig) {
 
   stop_soon = 1; 
 
-  if (child_pid > 0) kill(child_pid, SIGKILL);
-  if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
+  if (child_pid > 0 && !xen_mode ) kill(child_pid, SIGKILL);
+  if (forksrv_pid > 0) kill(forksrv_pid, xen_mode ? SIGTERM : SIGKILL);
 
 }
 
@@ -6825,13 +6834,17 @@ static void handle_timeout(int sig) {
 
   if (child_pid > 0) {
 
-    child_timed_out = 1; 
-    kill(child_pid, SIGKILL);
+    child_timed_out = 1;
+
+    if ( !xen_mode )
+        kill(child_pid, SIGKILL);
+    else
+        kill(forksrv_pid, SIGTERM);
 
   } else if (child_pid == -1 && forksrv_pid > 0) {
 
     child_timed_out = 1; 
-    kill(forksrv_pid, SIGKILL);
+    kill(forksrv_pid, xen_mode ? SIGTERM : SIGKILL);
 
   }
 
@@ -6941,7 +6954,7 @@ EXP_ST void check_binary(u8* fname) {
 
 #endif /* ^!__APPLE__ */
 
-  if (!qemu_mode && !dumb_mode &&
+  if (!qemu_mode && !xen_mode && !dumb_mode &&
       !memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1)) {
 
     SAYF("\n" cLRD "[-] " cRST
@@ -6966,7 +6979,7 @@ EXP_ST void check_binary(u8* fname) {
 
     SAYF("\n" cLRD "[-] " cRST
          "This program appears to be instrumented with afl-gcc, but is being run in\n"
-         "    QEMU mode (-Q). This is probably not what you want - this setup will be\n"
+         "    QEMU mode (-Q) or Xen mode (-X). This is probably not what you want - this setup will be\n"
          "    slow and offer no practical benefits.\n");
 
     FATAL("Instrumentation found in -Q mode");
@@ -7095,7 +7108,8 @@ static void usage(u8* argv0) {
        "  -f file       - location read by the fuzzed program (stdin)\n"
        "  -t msec       - timeout for each run (auto-scaled, 50-%u ms)\n"
        "  -m megs       - memory limit for child process (%u MB)\n"
-       "  -Q            - use binary-only instrumentation (QEMU mode)\n\n"     
+       "  -Q            - use binary-only instrumentation (QEMU mode)\n"
+       "  -X            - use virtual-machine instrumentation (Xen mode)\n\n"
  
        "Fuzzing behavior settings:\n\n"
 
@@ -7764,7 +7778,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QX")) > 0)
 
     switch (opt) {
 
@@ -7932,6 +7946,13 @@ int main(int argc, char** argv) {
 
         break;
 
+      case 'X': /* Xen mode */
+
+        if (xen_mode) FATAL("Multiple -X options not supported");
+        xen_mode = 1;
+
+        break;
+
       default:
 
         usage(argv[0]);
@@ -7952,6 +7973,7 @@ int main(int argc, char** argv) {
 
     if (crash_mode) FATAL("-C and -n are mutually exclusive");
     if (qemu_mode)  FATAL("-Q and -n are mutually exclusive");
+    if (xen_mode)  FATAL("-X and -n are mutually exclusive");
 
   }
 
@@ -8105,8 +8127,8 @@ int main(int argc, char** argv) {
   /* If we stopped programmatically, we kill the forkserver and the current runner. 
      If we stopped manually, this is done by the signal handler. */
   if (stop_soon == 2) {
-      if (child_pid > 0) kill(child_pid, SIGKILL);
-      if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
+      if (child_pid > 0 && !xen_mode ) kill(child_pid, SIGKILL);
+      if (forksrv_pid > 0) kill(forksrv_pid, xen_mode ? SIGTERM : SIGKILL);
   }
   /* Now that we've killed the forkserver, we wait for it to be able to get rusage stats. */
   if (waitpid(forksrv_pid, NULL, 0) <= 0) {
