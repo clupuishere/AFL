@@ -293,6 +293,11 @@ static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
+/* plot update sec variable */
+
+static s32 plot_update_msec = 5000;
+static int plot_update_configured;
+
 /* Fuzzing stages */
 
 enum {
@@ -3508,6 +3513,7 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
   static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
   static u64 prev_qc, prev_uc, prev_uh;
 
+  if (!plot_update_configured)
   if (prev_qp == queued_paths && prev_pf == pending_favored && 
       prev_pnf == pending_not_fuzzed && prev_ce == current_entry &&
       prev_qc == queue_cycle && prev_uc == unique_crashes &&
@@ -3991,7 +3997,7 @@ static void show_stats(void) {
 
   /* Every now and then, write plot data. */
 
-  if (cur_ms - last_plot_ms > PLOT_UPDATE_SEC * 1000) {
+  if (cur_ms - last_plot_ms > plot_update_msec) {
 
     last_plot_ms = cur_ms;
     maybe_update_plot_file(t_byte_ratio, avg_exec);
@@ -7122,6 +7128,7 @@ static void usage(u8* argv0) {
        "  -T text       - text banner to show on the screen\n"
        "  -M / -S id    - distributed mode (see parallel_fuzzing.txt)\n"
        "  -C            - crash exploration mode (the peruvian rabbit thing)\n\n"
+       "  -P time       - configure update plot time (expressed in ms)\n\n"
 
        "For additional tips, please consult %s/README.\n\n",
 
@@ -7778,7 +7785,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QX")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QXP:")) > 0)
 
     switch (opt) {
 
@@ -7952,6 +7959,13 @@ int main(int argc, char** argv) {
         xen_mode = 1;
 
         break;
+
+      case 'P': {
+        if (sscanf(optarg, "%u", &plot_update_msec) < 1 || optarg[0] == '-')
+          FATAL("Bad -P value");
+        plot_update_configured = 1;
+        break;
+      }
 
       default:
 
