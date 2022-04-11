@@ -297,6 +297,7 @@ static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
 static s32 plot_update_msec = 5000;
 static int plot_update_configured;
+static s32 duration_msec;
 
 /* Fuzzing stages */
 
@@ -7129,6 +7130,7 @@ static void usage(u8* argv0) {
        "  -M / -S id    - distributed mode (see parallel_fuzzing.txt)\n"
        "  -C            - crash exploration mode (the peruvian rabbit thing)\n\n"
        "  -P time       - configure update plot time (expressed in ms)\n\n"
+       "  -D time       - configure running duration time (expressed in ms)\n\n"
 
        "For additional tips, please consult %s/README.\n\n",
 
@@ -7785,7 +7787,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QXP:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QXP:D:")) > 0)
 
     switch (opt) {
 
@@ -7967,6 +7969,11 @@ int main(int argc, char** argv) {
         break;
       }
 
+      case 'D': /* duration */
+        if (sscanf(optarg, "%u", &duration_msec) < 1 || optarg[0] == '-')
+          FATAL("Bad -D value");
+        break;
+
       default:
 
         usage(argv[0]);
@@ -8128,6 +8135,9 @@ int main(int argc, char** argv) {
     }
 
     if (!stop_soon && exit_1) stop_soon = 2;
+
+    else if (duration_msec && get_cur_time() - start_time >= duration_msec)
+        stop_soon = 2;
 
     if (stop_soon) break;
 
