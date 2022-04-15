@@ -296,6 +296,7 @@ static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 /* plot update sec variable */
 
 static s32 plot_update_msec = 5000;
+static int plot_update_configured;
 static s32 duration_msec;
 
 /* Fuzzing stages */
@@ -3513,6 +3514,7 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
   static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
   static u64 prev_qc, prev_uc, prev_uh;
 
+  if (!plot_update_configured)
   if (prev_qp == queued_paths && prev_pf == pending_favored && 
       prev_pnf == pending_not_fuzzed && prev_ce == current_entry &&
       prev_qc == queue_cycle && prev_uc == unique_crashes &&
@@ -7963,6 +7965,7 @@ int main(int argc, char** argv) {
       case 'P': {
         if (sscanf(optarg, "%u", &plot_update_msec) < 1 || optarg[0] == '-')
           FATAL("Bad -P value");
+        plot_update_configured = 1;
         break;
       }
 
